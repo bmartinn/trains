@@ -14,7 +14,7 @@ description = """
 Please create new credentials using the web app: {}/admin
 In the Admin page, press "Create new credentials", then press "Copy to clipboard"
 
-Copy/Paste credentials here: """
+Paste credentials here: """
 
 try:
     def_host = ENV_HOST.get(default=config_obj.get("api.host"))
@@ -23,7 +23,7 @@ except Exception:
 
 host_description = """
 Editing configuration file: {CONFIG_FILE}
-Enter the url of the trains-server's api service, example: http://localhost:8008 or default demo server [{HOST}]: """.format(
+Enter the url of the trains-server's api service, for example: http://localhost:8008 : """.format(
     CONFIG_FILE=LOCAL_CONFIG_FILES[0],
     HOST=def_host,
 )
