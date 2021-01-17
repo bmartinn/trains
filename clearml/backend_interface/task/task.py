@@ -53,6 +53,7 @@ from .access import AccessMixin
 from .repo import ScriptInfo, pip_freeze
 from .hyperparams import HyperParams
 from ...config import config, PROC_MASTER_ID_ENV_VAR, SUPPRESS_UPDATE_MESSAGE_ENV_VAR
+from ...utilities.process.mp import SingletonLock
 
 
 class Task(IdObjectBase, AccessMixin, SetupUploadMixin):
@@ -69,6 +70,7 @@ class Task(IdObjectBase, AccessMixin, SetupUploadMixin):
 
     _store_diff = config.get('development.store_uncommitted_code_diff', False)
     _store_remote_diff = config.get('development.store_code_diff_from_remote', False)
+    _monitor_use_subprocess = bool(config.get('development.monitor_use_subprocess', True))
     _offline_filename = 'task.json'
 
     class TaskTypes(Enum):
@@ -138,6 +140,7 @@ class Task(IdObjectBase, AccessMixin, SetupUploadMixin):
         :param force_create: If True a new task will always be created (task_id, if provided, will be ignored)
         :type force_create: bool
         """
+        SingletonLock.instantiate()
         task_id = self._resolve_task_id(task_id, log=log) if not force_create else None
         self.__edit_lock = None
         super(Task, self).__init__(id=task_id, session=session, log=log)
@@ -501,7 +504,8 @@ class Task(IdObjectBase, AccessMixin, SetupUploadMixin):
             storage_uri = self.get_output_destination(log_on_error=False)
         except ValueError:
             storage_uri = None
-        self.__reporter = Reporter(self._get_metrics_manager(storage_uri=storage_uri))
+        self.__reporter = Reporter(
+            self._get_metrics_manager(storage_uri=storage_uri), use_subprocess=self._monitor_use_subprocess)
         return self.__reporter
 
     def _get_output_destination_suffix(self, extra_path=None):
@@ -668,16 +672,18 @@ class Task(IdObjectBase, AccessMixin, SetupUploadMixin):
                     else:
                         failures.append("model id: {}".format(m.id))
                         continue
-                except Exception as ex:
+                except Exception:
                     failures.append("model id: {}".format(m.id))
                     continue
                 if should_delete and not self._delete_uri(m.uri):
                     failures.append(m.uri)
 
+        event_uris = list(filter(None, event_uris))
         for uri in event_uris:
             if not self._delete_uri(uri):
                 failures.append(uri)
 
+        failures = list(filter(None, failures))
         if len(failures):
             error = "Failed deleting the following URIs:\n{}".format(
                 "\n".join(failures)
@@ -2148,4 +2154,3 @@ class Task(IdObjectBase, AccessMixin, SetupUploadMixin):
             return all_tasks[0].status, all_tasks[0].status_message
         except Exception:
             return None, None
-

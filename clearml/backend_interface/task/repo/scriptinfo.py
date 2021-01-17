@@ -686,7 +686,7 @@ class ScriptInfo(object):
                         script_dir = d
                         script_path = scripts_path[i]
                         break
-            except Exception as ex:
+            except BaseException as ex:
                 _log("no info for {} ({})", scripts_dir, ex)
             else:
                 if repo_info.is_empty():
