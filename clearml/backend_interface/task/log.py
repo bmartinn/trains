@@ -4,7 +4,6 @@ from pathlib2 import Path
 from logging import LogRecord, getLogger, basicConfig, getLevelName, INFO, WARNING, Formatter, makeLogRecord, warning
 from logging.handlers import BufferingHandler
 from six.moves.queue import Queue as TrQueue
-from multiprocessing import Event as PrEvent
 from threading import Event as TrEvent
 
 from .development.worker import DevWorker
@@ -13,7 +12,7 @@ from ...backend_api.session.session import MaxRequestSizeError
 from ...config import config
 from ...debugging.trace import stdout_print
 from ...utilities.process.mp import BackgroundMonitor
-from ...utilities.process.mp import SafeQueue as PrQueue
+from ...utilities.process.mp import SafeQueue as PrQueue, SafeEvent
 
 
 class BackgroundLogService(BackgroundMonitor):
@@ -79,7 +78,7 @@ class BackgroundLogService(BackgroundMonitor):
             self.send_all_records()
             self._queue = PrQueue()
         super(BackgroundLogService, self).set_subprocess_mode()
-        self._flush = PrEvent()
+        self._flush = SafeEvent()
 
     def add_to_queue(self, record):
         self._queue.put(record)

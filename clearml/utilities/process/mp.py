@@ -1,7 +1,7 @@
 import os
 import psutil
 import sys
-from multiprocessing import Process, Lock, Event as PrEvent
+from multiprocessing import Process, Lock, Event as ProcessEvent
 from multiprocessing.pool import ThreadPool
 from threading import Thread, Event as TrEvent
 from time import sleep
@@ -16,20 +16,24 @@ except ImportError:  # noqa
     from multiprocessing.queues import SimpleQueue
 
 
-class SafeQueue(object):
+class SingletonThreadPool(object):
     __lock = None
     __thread_pool = None
     __thread_pool_pid = None
 
+    @classmethod
+    def get(cls):
+        if os.getpid() != cls.__thread_pool_pid:
+            cls.__thread_pool = ThreadPool(1)
+            cls.__thread_pool_pid = os.getpid()
+        return cls.__thread_pool
+
+
+class SafeQueue(object):
+    __thread_pool = SingletonThreadPool()
+
     def __init__(self, *args, **kwargs):
         self._q = SimpleQueue(*args, **kwargs)
-        if not SafeQueue.__lock:
-            SafeQueue.__lock = Lock()
-        if not SafeQueue.__thread_pool:
-            with SafeQueue.__lock:
-                if not SafeQueue.__thread_pool:
-                    SafeQueue.__thread_pool_pid = os.getpid()
-                    SafeQueue.__thread_pool = ThreadPool(processes=1)
 
     def empty(self):
         return self._q.empty()
@@ -38,16 +42,29 @@ class SafeQueue(object):
         return self._q.get()
 
     def put(self, obj):
-        # if this is a new sub_process
-        if os.getpid() != SafeQueue.__thread_pool_pid:
-            # get the lock
-            with SafeQueue.__lock:
-                # check if we need to create a new thread pool (now atomic)
-                if os.getpid() != SafeQueue.__thread_pool_pid:
-                    SafeQueue.__thread_pool_pid = os.getpid()
-                    SafeQueue.__thread_pool = ThreadPool(processes=1)
         # make sure the block put is done in the thread pool i.e. in the background
-        SafeQueue.__thread_pool.apply_async(self._q.put, args=(obj, ))
+        SafeQueue.__thread_pool.get().apply_async(self._q.put, args=(obj, ))
+
+
+class SafeEvent(object):
+    __thread_pool = SingletonThreadPool()
+
+    def __init__(self):
+        self._event = ProcessEvent()
+
+    def is_set(self):
+        return self._event.is_set()
+
+    def set(self):
+        if not BackgroundMonitor.is_subprocess() or BackgroundMonitor.is_subprocess_alive():
+            self._event.set()
+        # SafeEvent.__thread_pool.get().apply_async(func=self._event.set, args=())
+
+    def clear(self):
+        return self._event.clear()
+
+    def wait(self, timeout=None):
+        return self._event.wait(timeout=timeout)
 
 
 class SingletonLock(AbstractContextManager):
@@ -153,9 +170,9 @@ class BackgroundMonitor(object):
     def set_subprocess_mode(self):
         # called just before launching the daemon in a subprocess
         self._subprocess = True
-        self._done_ev = PrEvent()
-        self._start_ev = PrEvent()
-        self._event = PrEvent()
+        self._done_ev = SafeEvent()
+        self._start_ev = SafeEvent()
+        self._event = SafeEvent()
 
     def _daemon_step(self):
         pass
@@ -167,7 +184,7 @@ class BackgroundMonitor(object):
                 d._start()
         elif not BackgroundMonitor._main_process:
             cls._parent_pid = os.getpid()
-            cls._sub_process_started = PrEvent()
+            cls._sub_process_started = SafeEvent()
             cls._sub_process_started.clear()
             # setup
             for d in BackgroundMonitor._instances:
@@ -247,6 +264,8 @@ class BackgroundMonitor(object):
                 psutil.Process(cls._main_process.pid).status() != psutil.STATUS_ZOMBIE
         except Exception:
             current_pid = cls._main_process.pid
+            if not current_pid:
+                return False
             try:
                 parent = psutil.Process(cls._parent_pid)
             except psutil.Error:

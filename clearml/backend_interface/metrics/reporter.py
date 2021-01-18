@@ -2,7 +2,7 @@ import datetime
 import json
 import logging
 import math
-from multiprocessing import Event as PrEvent, Semaphore
+from multiprocessing import Semaphore
 from threading import Event as TrEvent
 
 import numpy as np
@@ -22,7 +22,7 @@ from ...utilities.plotly_reporter import (
     create_image_plot, create_plotly_table, )
 from ...utilities.process.mp import BackgroundMonitor
 from ...utilities.py3_interop import AbstractContextManager
-from ...utilities.process.mp import SafeQueue as PrQueue
+from ...utilities.process.mp import SafeQueue as PrQueue, SafeEvent
 
 try:
     from collections.abc import Iterable  # noqa
@@ -35,7 +35,7 @@ class BackgroundReportService(BackgroundMonitor, AsyncManagerMixin):
         super(BackgroundReportService, self).__init__(wait_period=flush_frequency)
         self._subprocess = use_subprocess
         self._flush_threshold = flush_threshold
-        self._exit_event = PrEvent() if self._subprocess else TrEvent()
+        self._exit_event = SafeEvent() if self._subprocess else TrEvent()
         self._queue = PrQueue() if self._subprocess else TrQueue()
         self._queue_size = 0
         self._res_waiting = Semaphore()
@@ -51,15 +51,16 @@ class BackgroundReportService(BackgroundMonitor, AsyncManagerMixin):
             self._write()
             self._queue = PrQueue()
         super(BackgroundReportService, self).set_subprocess_mode()
-        self._event = PrEvent()
 
     def stop(self):
-        self._exit_event.set()
+        if not self.is_subprocess() or self.is_subprocess_alive():
+            self._exit_event.set()
         super(BackgroundReportService, self).stop()
 
     def flush(self):
         self._queue_size = 0
-        self._event.set()
+        if not self.is_subprocess() or self.is_subprocess_alive():
+            self._event.set()
 
     def add_event(self, ev):
         self._queue.put(ev)
@@ -267,16 +268,20 @@ class Reporter(InterfaceBase, AbstractContextManager, SetupUploadMixin, AsyncMan
         :param round_digits: number of digits after the dot to leave
         :type round_digits: int
         """
+        inf_value = math.inf if six.PY3 else float("inf")
 
-        def floatstr(o):
-            inf_value = math.inf if six.PY3 else float("inf")
-            if o != o:
-                return 'nan'
-            elif o == inf_value:
-                return 'inf'
-            elif o == -inf_value:
-                return '-inf'
-            return round(o, ndigits=round_digits) if round_digits is not None else o
+        def to_base_type(o):
+            if isinstance(o, float):
+                if o != o:
+                    return 'nan'
+                elif o == inf_value:
+                    return 'inf'
+                elif o == -inf_value:
+                    return '-inf'
+                return round(o, ndigits=round_digits) if round_digits is not None else o
+            elif isinstance(o, (datetime.date, datetime.datetime)):
+                return o.isoformat()
+            return o
 
         # noinspection PyBroadException
         try:
@@ -287,12 +292,8 @@ class Reporter(InterfaceBase, AbstractContextManager, SetupUploadMixin, AsyncMan
                 elif isinstance(obj, np.floating):
                     return float(round(obj, ndigits=round_digits) if round_digits is not None else obj)
                 elif isinstance(obj, np.ndarray):
-                    if obj.dtype in (datetime.date, datetime.datetime):
-                        return [dt.isoformat() for dt in obj]
-                    else:
-                        return [floatstr(a) for a in obj.tolist()]
-                elif isinstance(obj, (datetime.date, datetime.datetime)):
-                    return obj.isoformat()
+                    return [to_base_type(a) for a in obj.tolist()]
+                return to_base_type(obj)
 
         except Exception:
             default = None
@@ -310,11 +311,11 @@ class Reporter(InterfaceBase, AbstractContextManager, SetupUploadMixin, AsyncMan
                         continue
                     for k, v in d.items():
                         if isinstance(v, list):
-                            d[k] = list(floatstr(s) if isinstance(s, float) else s for s in v)
+                            d[k] = list(to_base_type(s) for s in v)
                         elif isinstance(v, tuple):
-                            d[k] = tuple(floatstr(s) if isinstance(s, float) else s for s in v)
-                        elif isinstance(v, float):
-                            d[k] = floatstr(v)
+                            d[k] = tuple(to_base_type(s) for s in v)
+                        else:
+                            d[k] = to_base_type(v)
             plot = json.dumps(plot, default=default)
         elif not isinstance(plot, six.string_types):
             raise ValueError('Plot should be a string or a dict')
